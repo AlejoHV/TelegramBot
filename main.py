@@ -49,7 +49,7 @@ init_db()
 
 # Diccionario de barberos y sus citas disponibles
 barberos = {
-    "Juan": ["2025-04-06 10:42", "2025-04-10 14:00"],
+    "Juan": ["2025-04-06 10:42", "2025-04-10 14:25"],
     "Pedro": ["2025-04-11 11:00", "2025-04-11 15:00"],
     "Luis": ["2025-04-12 12:00", "2025-04-12 16:00"]
 }
@@ -269,7 +269,7 @@ def ver_cita(call):
 def cancelar_cita(call):
     user_id = call.from_user.id
     try:
-        # Obtener las citas programadas del usuario
+        # Obtener todas las citas programadas del usuario
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("SELECT id, barbero, fecha FROM citas WHERE user_id = ?", (user_id,))
@@ -285,52 +285,23 @@ def cancelar_cita(call):
             )
             return
 
-        # Si tiene citas, mostrar las opciones para cancelar
-        markup = types.InlineKeyboardMarkup()
-        for cita in citas:
-            cita_id, barbero, fecha = cita
-            boton_texto = f"{barbero} - {fecha}"
-            markup.row(types.InlineKeyboardButton(boton_texto, callback_data=f"cancelar:{cita_id}"))
-
-        markup.row(types.InlineKeyboardButton("Volver al menú", callback_data="volver_menu"))
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text="Selecciona la cita que deseas cancelar:",
-            reply_markup=markup
-        )
-
-    except Exception as e:
-        logger.error("Error al mostrar citas para cancelar: %s", e)
-        texto = "Hubo un error al mostrar tus citas para cancelar."
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=texto
-        )
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cancelar:"))
-def confirmar_cancelacion(call):
-    try:
-        cita_id = int(call.data.split(":")[1])
-
-        # Eliminar la cita seleccionada
+        # Eliminar todas las citas del usuario
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM citas WHERE id = ?", (cita_id,))
+        cursor.execute("DELETE FROM citas WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
 
-        texto = "Tu cita ha sido cancelada exitosamente."
+        texto = "Todas tus citas han sido canceladas exitosamente."
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=texto
         )
+
     except Exception as e:
-        logger.error("Error al cancelar cita: %s", e)
-        texto = "Hubo un error al cancelar tu cita."
+        logger.error("Error al cancelar las citas: %s", e)
+        texto = "Hubo un error al cancelar tus citas."
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
@@ -350,6 +321,10 @@ def recordatorio(user_id, barber, fecha_cita_str):
 
 if __name__ == "__main__":
     try:
+        # Eliminar el webhook si está configurado
+        bot.remove_webhook()
+
+        # Iniciar el polling después de eliminar el webhook
         bot.polling(none_stop=True)
     except Exception as e:
         logger.error("Error en polling del bot: %s", e)
