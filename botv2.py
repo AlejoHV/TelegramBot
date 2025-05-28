@@ -178,6 +178,8 @@ def callback_handler(call):
         cancelar_cita(call)
     elif call.data == "volver_menu":
         volver_al_menu(call)
+    elif call.data == "confirmar_cancelar":  # Nuevo handler para confirmación
+        confirmar_cancelacion(call)
 
 
 def mostrar_barberos(call):
@@ -277,6 +279,46 @@ def ver_cita(call):
     )
 
 
+def confirmar_cancelacion(call):
+    user_id = call.from_user.id
+    try:
+        # Eliminar todas las citas del usuario
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM citas WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+
+        # Cancelar todos los recordatorios programados para este usuario
+        for job_id in list(scheduled_jobs.keys()):
+            if job_id.startswith(f"{user_id}_"):
+                try:
+                    scheduled_jobs[job_id].remove()
+                    del scheduled_jobs[job_id]
+                except Exception as e:
+                    logger.error(f"Error al cancelar el trabajo {job_id}: {e}")
+
+        # Editar el mensaje actual para mostrar confirmación
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="✅ Todas tus citas han sido canceladas exitosamente."
+        )
+
+        # Mostrar el menú principal después de 2 segundos
+        import time
+        time.sleep(2)
+        volver_al_menu(call)
+
+    except Exception as e:
+        logger.error("Error al confirmar cancelación: %s", e)
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="❌ Hubo un error al cancelar tus citas."
+        )
+
+# Modifica la función cancelar_cita para que no use register_next_step_handler
 def cancelar_cita(call):
     user_id = call.from_user.id
     try:
@@ -309,9 +351,6 @@ def cancelar_cita(call):
             reply_markup=markup
         )
 
-        # Registrar el siguiente paso para manejar la confirmación
-        bot.register_next_step_handler(call.message, lambda m: handle_confirmar_cancelar(m, user_id))
-
     except Exception as e:
         logger.error("Error al cancelar las citas: %s", e)
         texto = "❌ Hubo un error al cancelar tus citas."
@@ -319,42 +358,6 @@ def cancelar_cita(call):
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
             text=texto
-        )
-
-
-def handle_confirmar_cancelar(message, user_id):
-    try:
-        # Eliminar todas las citas del usuario
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM citas WHERE user_id = ?", (user_id,))
-        conn.commit()
-        conn.close()
-
-        # Cancelar todos los recordatorios programados para este usuario
-        for job_id in list(scheduled_jobs.keys()):
-            if job_id.startswith(f"{user_id}_"):
-                try:
-                    scheduled_jobs[job_id].remove()
-                    del scheduled_jobs[job_id]
-                except Exception as e:
-                    logger.error(f"Error al cancelar el trabajo {job_id}: {e}")
-
-        texto = "✅ Todas tus citas han sido canceladas exitosamente."
-        bot.send_message(
-            message.chat.id,
-            texto
-        )
-
-        # Volver al menú principal
-        volver_al_menu(message)
-
-    except Exception as e:
-        logger.error("Error al confirmar cancelación: %s", e)
-        texto = "❌ Hubo un error al cancelar tus citas."
-        bot.send_message(
-            message.chat.id,
-            texto
         )
 
 
