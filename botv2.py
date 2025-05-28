@@ -20,6 +20,7 @@ if not TOKEN:
 
 scheduler = BackgroundScheduler()
 scheduler.start()
+scheduled_jobs = {}  # Diccionario para almacenar los trabajos programados
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -49,7 +50,7 @@ init_db()
 
 # Diccionario de barberos y sus citas disponibles
 barberos = {
-    "Juan": ["2025-04-06 10:42", "2025-04-10 14:25"],
+    "Juan": ["2025-05-28 11:54", "2025-04-10 14:25"],
     "Pedro": ["2025-04-11 11:00", "2025-04-11 15:00"],
     "Luis": ["2025-04-12 12:00", "2025-04-12 16:00"]
 }
@@ -176,7 +177,7 @@ def callback_handler(call):
     elif call.data == "cancelar_cita":
         cancelar_cita(call)
     elif call.data == "volver_menu":
-        volver_al_menu(call)  # Llamar a la función que maneja el "volver_menu"
+        volver_al_menu(call)
 
 
 def mostrar_barberos(call):
@@ -235,15 +236,25 @@ def confirmar_cita(call):
         bot.edit_message_text(
             chat_id=call.message.chat.id,
             message_id=call.message.message_id,
-            text=f"Cita agendada con el barbero {barber} para el {fecha_cita_str}. ¡Nos vemos pronto!"
+            text=f"✅ Cita agendada con el barbero {barber} para el {fecha_cita_str}. ¡Nos vemos pronto!"
         )
 
-        # Programar el recordatorio 1 día antes
+        # Programar el recordatorio 1 día antes solo si es en el futuro
         reminder_time = fecha_cita - datetime.timedelta(days=1)
-        if reminder_time < datetime.datetime.now():
-            reminder_time = datetime.datetime.now() + datetime.timedelta(seconds=10)
-        trigger = DateTrigger(run_date=reminder_time)
-        scheduler.add_job(recordatorio, trigger, args=[user_id, barber, fecha_cita_str])
+        if reminder_time > datetime.datetime.now():
+            job_id = f"{user_id}_{barber}_{fecha_cita_str}"
+            job = scheduler.add_job(
+                recordatorio,
+                DateTrigger(run_date=reminder_time),
+                args=[user_id, barber, fecha_cita_str],
+                id=job_id
+            )
+            scheduled_jobs[job_id] = job
+        else:
+            bot.send_message(
+                user_id,
+                f"ℹ️ Nota: No se programó recordatorio porque tu cita con {barber} es muy pronto ({fecha_cita_str})"
+            )
     except Exception as e:
         logger.error("Error al confirmar la cita: %s", e)
         bot.answer_callback_query(call.id, text="Error al procesar la cita.")
@@ -253,9 +264,9 @@ def ver_cita(call):
     user_id = call.from_user.id
     cita = get_cita(user_id)
     if cita:
-        texto = f"Tienes una cita programada con el barbero {cita[0]} para el {cita[1]}."
+        texto = f"📅 Tienes una cita programada con el barbero {cita[0]} para el {cita[1]}."
     else:
-        texto = "No tienes citas programadas."
+        texto = "ℹ️ No tienes citas programadas."
     markup = types.InlineKeyboardMarkup()
     markup.row(types.InlineKeyboardButton("Volver al menú", callback_data="volver_menu"))
     bot.edit_message_text(
@@ -277,7 +288,7 @@ def cancelar_cita(call):
         conn.close()
 
         if not citas:
-            texto = "No tienes citas programadas para cancelar."
+            texto = "ℹ️ No tienes citas programadas para cancelar."
             bot.edit_message_text(
                 chat_id=call.message.chat.id,
                 message_id=call.message.message_id,
@@ -285,6 +296,34 @@ def cancelar_cita(call):
             )
             return
 
+        # Mostrar confirmación antes de cancelar
+        markup = types.InlineKeyboardMarkup()
+        btn_confirmar = types.InlineKeyboardButton("✅ Confirmar", callback_data="confirmar_cancelar")
+        btn_cancelar = types.InlineKeyboardButton("❌ Volver", callback_data="volver_menu")
+        markup.row(btn_confirmar, btn_cancelar)
+
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text="⚠️ ¿Estás seguro que quieres cancelar TODAS tus citas programadas?",
+            reply_markup=markup
+        )
+
+        # Registrar el siguiente paso para manejar la confirmación
+        bot.register_next_step_handler(call.message, lambda m: handle_confirmar_cancelar(m, user_id))
+
+    except Exception as e:
+        logger.error("Error al cancelar las citas: %s", e)
+        texto = "❌ Hubo un error al cancelar tus citas."
+        bot.edit_message_text(
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            text=texto
+        )
+
+
+def handle_confirmar_cancelar(message, user_id):
+    try:
         # Eliminar todas las citas del usuario
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
@@ -292,29 +331,57 @@ def cancelar_cita(call):
         conn.commit()
         conn.close()
 
-        texto = "Todas tus citas han sido canceladas exitosamente."
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=texto
+        # Cancelar todos los recordatorios programados para este usuario
+        for job_id in list(scheduled_jobs.keys()):
+            if job_id.startswith(f"{user_id}_"):
+                try:
+                    scheduled_jobs[job_id].remove()
+                    del scheduled_jobs[job_id]
+                except Exception as e:
+                    logger.error(f"Error al cancelar el trabajo {job_id}: {e}")
+
+        texto = "✅ Todas tus citas han sido canceladas exitosamente."
+        bot.send_message(
+            message.chat.id,
+            texto
         )
 
+        # Volver al menú principal
+        volver_al_menu(message)
+
     except Exception as e:
-        logger.error("Error al cancelar las citas: %s", e)
-        texto = "Hubo un error al cancelar tus citas."
-        bot.edit_message_text(
-            chat_id=call.message.chat.id,
-            message_id=call.message.message_id,
-            text=texto
+        logger.error("Error al confirmar cancelación: %s", e)
+        texto = "❌ Hubo un error al cancelar tus citas."
+        bot.send_message(
+            message.chat.id,
+            texto
         )
 
 
 def recordatorio(user_id, barber, fecha_cita_str):
     try:
-        bot.send_message(
-            user_id,
-            f"Recordatorio: Tu cita con el barbero {barber} es mañana, {fecha_cita_str}. ¡No faltes!"
-        )
+        # Verificar si la cita aún existe antes de enviar el recordatorio
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM citas WHERE user_id = ? AND barbero = ? AND fecha = ?",
+                       (user_id, barber, fecha_cita_str))
+        cita_existe = cursor.fetchone()
+        conn.close()
+
+        if cita_existe:
+            # Formatear la fecha para mostrarla más amigable
+            fecha_obj = datetime.datetime.strptime(fecha_cita_str, '%Y-%m-%d %H:%M')
+            fecha_formateada = fecha_obj.strftime('%d/%m/%Y a las %H:%M')
+
+            bot.send_message(
+                user_id,
+                f"⏰ RECORDATORIO:\n\nTu cita con el barbero {barber} es mañana a las {fecha_formateada}.\n\n¡Te esperamos!"
+            )
+
+            # Eliminar el trabajo programado después de ejecutarse
+            job_id = f"{user_id}_{barber}_{fecha_cita_str}"
+            if job_id in scheduled_jobs:
+                del scheduled_jobs[job_id]
     except Exception as e:
         logger.error("Error al enviar el recordatorio: %s", e)
 
